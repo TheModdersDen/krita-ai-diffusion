@@ -28,3 +28,4 @@ Pillow
 ndjson
 ujson
 boto3
+keyring
