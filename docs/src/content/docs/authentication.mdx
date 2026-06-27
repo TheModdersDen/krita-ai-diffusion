@@ -1,0 +1,44 @@
+---
+title: Server Authentication
+description: Secure JWT/HTTPS token authentication for remote ComfyUI connections in Krita
+---
+
+import ExternalLink from '../../components/ExternalLink.astro'
+
+The Krita AI Diffusion plugin supports persistent, secure JWT/HTTPS token-based authentication for custom (external) ComfyUI servers. This allows you to connect to authenticated or secure remote ComfyUI installations (e.g. behind reverse proxies or gateway access controls) seamlessly.
+
+---
+
+## How to Configure
+
+1. In Krita, open the settings dialog by clicking the **Configure Krita** or plugin settings icon.
+2. Navigate to the **Server Configuration** tab.
+3. Select **Custom Server**.
+4. Below the **Server URL** field, you will find the **Authorization Token** field.
+5. Paste or type your authentication token/JWT into this field. The input is masked automatically for privacy.
+6. Click **Connect** or save settings to apply. 
+
+The token will automatically apply on every plugin update, reload, or Krita restart without requiring manual re-entry.
+
+---
+
+## Architectural & Security Overview
+
+### Zero Plaintext on Disk
+The authentication token is never saved in plaintext inside `settings.json`. When settings are saved, the plugin extracts the token and delegates its storage to the secure storage manager. The token field in `settings.json` is stored as an empty string `""`.
+
+### Native OS-Level Keyrings
+To ensure high-entropy, post-quantum secure encryption, the plugin delegates storage to native operating system credential stores:
+- **Windows**: Windows Credential Manager (via native Windows `CredWriteW`/`CredReadW` APIs).
+- **macOS**: macOS Keychain (via the standard `/usr/bin/security` tool).
+- **Linux**: Linux Secret Service (via the `secret-tool` CLI from `libsecret`).
+
+If the third-party Python `keyring` library is installed, it is preferred. Otherwise, the plugin uses native `ctypes` and `subprocess` fallbacks to run out of the box inside Krita's embedded Python interpreter without requiring any external pip installations.
+
+### In-Memory Lifetime
+The token is loaded decrypted from secure storage only during the active Krita session and is stored strictly in memory. 
+
+### HTTP and WebSocket Authentication
+- **HTTP**: The token is sent as a standard bearer token header on all API calls:
+  `Authorization: Bearer <your_token>`
+- **WebSocket**: The token is also automatically injected into the WebSocket connection upgrade handshake under the `Authorization` header, satisfying server gateway or reverse proxy authentication requirements.

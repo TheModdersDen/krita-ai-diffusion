@@ -210,7 +210,11 @@ class Settings(QObject):
     )
 
     server_authorization: str
-    _server_authorization = Setting("ComfyUI Authorization Token", "")
+    _server_authorization = Setting(
+        _("Authorization Token"),
+        "",
+        _("Token for authenticating with ComfyUI server"),
+    )
 
     check_server_resources: bool
     _check_server_resources = Setting("Refuse connection if nodes or models are missing", True)
@@ -535,8 +539,15 @@ class Settings(QObject):
 
     def save(self, path: Path | None = None):
         path = self.default_path or path
+        values = self._values.copy()
+        if "server_authorization" in values:
+            token = values["server_authorization"]
+            from .secure_storage import save_token
+
+            save_token(token)
+            values["server_authorization"] = ""
         with open(path, "w") as file:
-            file.write(json.dumps(self._values, default=encode_json, indent=4))
+            file.write(json.dumps(values, default=encode_json, indent=4))
 
     def load(self, path: Path | None = None):
         path = self.default_path or path
@@ -558,6 +569,17 @@ class Settings(QObject):
                     else:
                         log.error(f"{path}: {v} is not a valid value for '{k}'")
                         self._values[k] = setting.default
+
+            from .secure_storage import load_token
+
+            if self._values.get("server_authorization") == "":
+                self._values["server_authorization"] = load_token()
+            else:
+                token = self._values.get("server_authorization", "")
+                if token:
+                    from .secure_storage import save_token
+
+                    save_token(token)
         except Exception as e:
             log.error(f"Failed to load settings: {e}")
 
