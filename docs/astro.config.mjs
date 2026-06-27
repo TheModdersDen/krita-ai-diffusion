@@ -25,6 +25,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Installation', slug: 'installation' },
 						{ label: 'ComfyUI Setup', slug: 'comfyui-setup' },
+						{ label: 'Server Authentication', slug: 'authentication' },
 						{ label: 'Common Issues', slug: 'common-issues' },
 					],
 				},
