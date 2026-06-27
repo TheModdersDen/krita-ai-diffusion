@@ -158,8 +158,8 @@ class ComfyClient(Client):
 
         self._requests.add_header("ngrok-skip-browser-warning", "69420")
         self._requests.add_header("skip_zrok_interstitial", "69420")
-        if settings.server_authorization:
-            self._requests.set_auth(settings.server_authorization)
+        if self._token:
+            self._requests.set_auth(self._token)
 
     async def connect(self):
         self.url = parse_url(self.url)
@@ -327,7 +327,7 @@ class ComfyClient(Client):
 
     async def _listen(self):
         url = websocket_url(self.url)
-        args = websocket_args(settings.server_authorization)
+        args = websocket_args(self._token)
         async for websocket in websockets.connect(f"{url}/ws?clientId={self._id}", **args):
             try:
                 await self._subscribe_workflows()

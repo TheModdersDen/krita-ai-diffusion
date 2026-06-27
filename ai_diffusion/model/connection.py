@@ -138,7 +138,7 @@ class Connection(QObject, ObservableProperties):
                     return None
                 return CloudClient(CloudClient.default_api_url, settings.access_token)
             case ServerMode.external | ServerMode.managed:
-                return ComfyClient(settings.server_url, settings.access_token)
+                return ComfyClient(settings.server_url, settings.server_authorization)
             case _:
                 raise ValueError(f"Invalid server mode: {settings.server_mode}")
 
