@@ -516,6 +516,12 @@ class ConnectionSettings(SettingsTab):
         server_layout.addWidget(self._connect_button)
         connection_layout.addLayout(server_layout)
 
+        add_header(connection_layout, Settings._server_authorization)
+        self._server_authorization = QLineEdit(self._connection_widget)
+        self._server_authorization.setEchoMode(QLineEdit.Password)
+        self._server_authorization.textChanged.connect(self.write)
+        connection_layout.addWidget(self._server_authorization)
+
         self._connection_status = QLabel(self._connection_widget)
         self._supported_workloads = QLabel(self._connection_widget)
         self._supported_workloads.setWordWrap(True)
@@ -572,10 +578,12 @@ class ConnectionSettings(SettingsTab):
         self._server_mode.update_status(root.connection.state, self._server.state)
         self._update_server_mode(settings.server_mode)
         self._server_url.setText(settings.server_url)
+        self._server_authorization.setText(settings.server_authorization)
 
     def _write(self):
         settings.server_mode = self._server_mode.mode
         settings.server_url = self._server_url.text()
+        settings.server_authorization = self._server_authorization.text()
 
     def _change_server_mode(self):
         self._update_server_mode(self._server_mode.mode)
