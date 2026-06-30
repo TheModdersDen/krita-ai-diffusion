@@ -27,6 +27,14 @@
                         "remoteRoot": "${env:HOME}/.local/share/krita/pykrita"
                     }
                 ]
+            },
+            "osx": {
+                "pathMappings": [
+                    {
+                        "localRoot": "${workspaceFolder}",
+                        "remoteRoot": "${env:HOME}/Library/Application Support/krita/pykrita"
+                    }
+                ]
             }
         },
         {
