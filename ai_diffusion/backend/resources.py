@@ -10,10 +10,10 @@ from typing import Any, NamedTuple
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.51.0"
+version = "1.52.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "025e6792ee64181ddce8a84411e0c7311e00b179"
+comfy_version = "a95e461916de9cbda2e89140ab86a8a7c3f9702a"
 
 
 class CustomNode(NamedTuple):
@@ -43,7 +43,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "a1e51904dec9a73b92865b512aa417f10938d608",
+        "5d3194f4d4158ab31df7a060e1e4c56fa03f320c",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
@@ -98,6 +98,7 @@ class Arch(Enum):
     anima = "Anima"
     zimage = "Z-Image"
     ernie = "ERNIE Image"
+    krea2 = "Krea 2"
 
     auto = "Automatic"
     all = "All"
@@ -142,6 +143,8 @@ class Arch(Enum):
             return Arch.zimage
         if string in {"ernie-image", "ernie_image"}:
             return Arch.ernie
+        if string == "krea2":
+            return Arch.krea2
         return None
 
     @staticmethod
@@ -181,7 +184,7 @@ class Arch(Enum):
 
     @property
     def supports_regions(self):
-        return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v]
+        return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v, Arch.anima]
 
     @property
     def supports_lcm(self):
@@ -249,6 +252,8 @@ class Arch(Enum):
                 return ["qwen_3_4b"]
             case Arch.ernie:
                 return ["ministral"]
+            case Arch.krea2:
+                return ["qwen_3vl_4b"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
@@ -271,6 +276,7 @@ class Arch(Enum):
             Arch.anima,
             Arch.zimage,
             Arch.ernie,
+            Arch.krea2,
         ]
 
 
@@ -818,6 +824,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_8b"): ["qwen_3_8b", "qwen3-8b", "qwen3_8b"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_06b"): ["qwen_3_06b", "qwen3-06b", "qwen3_06b"],
     resource_id(ResourceKind.text_encoder, Arch.all, "ministral"): ["ministral-3-3b", "ministral"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3vl_4b"): ["qwen3vl_4b", "qwen_3vl_4b", "qwen3-vl-4b"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -835,6 +842,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.anima, "default"): ["qwen_image"],
     resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "flux-", "flux_", "flux/", "flux1", "ae.s"],
     resource_id(ResourceKind.vae, Arch.ernie, "default"): ["flux2"],
+    resource_id(ResourceKind.vae, Arch.krea2, "default"): ["qwen_image"],
 }
 # fmt: on
 
@@ -870,6 +878,8 @@ required_resource_ids = {
     ResourceId(ResourceKind.vae, Arch.flux2_9b, "default"),
     ResourceId(ResourceKind.text_encoder, Arch.ernie, "ministral"),
     ResourceId(ResourceKind.vae, Arch.ernie, "default"),
+    ResourceId(ResourceKind.text_encoder, Arch.krea2, "qwen_3vl_4b"),
+    ResourceId(ResourceKind.vae, Arch.krea2, "default"),
 }
 
 recommended_resource_ids = [
