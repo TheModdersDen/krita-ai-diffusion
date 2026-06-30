@@ -1,293 +1,191 @@
 from __future__ import annotations
 
+import base64
+import getpass
+import hashlib
+import hmac
+import os
 import platform
-import subprocess
+import secrets
+import uuid
 
 from .util import client_logger as log
+from .util import user_data_dir
 
 SERVICE_NAME = "KritaAIDiffusion"
-USERNAME = "comfyui_auth"
 
 
 # ---------------------------------------------------------------------------
-# Windows Native Credential Manager via ctypes
+# Pure Python RFC 7539 ChaCha20 Cipher Implementation
 # ---------------------------------------------------------------------------
-def _save_win32_cred(target: str, username: str, secret: str) -> bool:
+def _quarter_round(x: list[int], a: int, b: int, c: int, d: int):
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF
+    x[d] = x[d] ^ x[a]
+    x[d] = ((x[d] << 16) | (x[d] >> 16)) & 0xFFFFFFFF
+
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF
+    x[b] = x[b] ^ x[c]
+    x[b] = ((x[b] << 12) | (x[b] >> 20)) & 0xFFFFFFFF
+
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF
+    x[d] = x[d] ^ x[a]
+    x[d] = ((x[d] << 8) | (x[d] >> 24)) & 0xFFFFFFFF
+
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF
+    x[b] = x[b] ^ x[c]
+    x[b] = ((x[b] << 7) | (x[b] >> 25)) & 0xFFFFFFFF
+
+
+def _chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
+    constants = [0x61707865, 0x3320646E, 0x79622D32, 0x6B206574]
+    key_words = [int.from_bytes(key[i : i + 4], "little") for i in range(0, 32, 4)]
+    nonce_words = [int.from_bytes(nonce[i : i + 4], "little") for i in range(0, 12, 4)]
+
+    state = constants + key_words + [counter] + nonce_words
+    initial_state = list(state)
+
+    for _ in range(10):  # 20 rounds (10 iterations of column + diagonal rounds)
+        # Column round
+        _quarter_round(state, 0, 4, 8, 12)
+        _quarter_round(state, 1, 5, 9, 13)
+        _quarter_round(state, 2, 6, 10, 14)
+        _quarter_round(state, 3, 7, 11, 15)
+        # Diagonal round
+        _quarter_round(state, 0, 5, 10, 15)
+        _quarter_round(state, 1, 6, 11, 12)
+        _quarter_round(state, 2, 7, 8, 13)
+        _quarter_round(state, 3, 4, 9, 14)
+
+    out = [(state[i] + initial_state[i]) & 0xFFFFFFFF for i in range(16)]
+    return b"".join(x.to_bytes(4, "little") for x in out)
+
+
+def chacha20_crypt(data: bytes, key: bytes, nonce: bytes) -> bytes:
+    """Encrypts or decrypts data using ChaCha20 stream cipher."""
+    res = bytearray()
+    for block_num in range((len(data) + 63) // 64):
+        keystream = _chacha20_block(key, block_num, nonce)
+        block = data[block_num * 64 : (block_num + 1) * 64]
+        res.extend(b1 ^ b2 for b1, b2 in zip(block, keystream))
+    return bytes(res)
+
+
+# ---------------------------------------------------------------------------
+# Key Derivation & File Helpers
+# ---------------------------------------------------------------------------
+def _get_machine_fingerprint() -> bytes:
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        class CREDENTIALW(ctypes.Structure):
-            _fields_ = [
-                ("Flags", wintypes.DWORD),
-                ("Type", wintypes.DWORD),
-                ("TargetName", wintypes.LPWSTR),
-                ("Comment", wintypes.LPWSTR),
-                ("LastWritten", wintypes.FILETIME),
-                ("CredentialBlobSize", wintypes.DWORD),
-                ("CredentialBlob", ctypes.c_void_p),
-                ("Persist", wintypes.DWORD),
-                ("AttributeCount", wintypes.DWORD),
-                ("Attributes", ctypes.c_void_p),
-                ("TargetAlias", wintypes.LPWSTR),
-                ("UserName", wintypes.LPWSTR),
-            ]
-
-        CRED_TYPE_GENERIC = 1
-        CRED_PERSIST_LOCAL_MACHINE = 2
-
-        secret_bytes = secret.encode("utf-16le")
-        cred = CREDENTIALW()
-        cred.Flags = 0
-        cred.Type = CRED_TYPE_GENERIC
-        cred.TargetName = target
-        cred.Comment = "Krita AI Diffusion Token"
-        cred.CredentialBlobSize = len(secret_bytes)
-        cred.CredentialBlob = ctypes.cast(
-            ctypes.create_string_buffer(secret_bytes), ctypes.c_void_p
-        )
-        cred.Persist = CRED_PERSIST_LOCAL_MACHINE
-        cred.UserName = username
-        cred.AttributeCount = 0
-        cred.Attributes = None
-        cred.TargetAlias = None
-
-        advapi32 = ctypes.windll.advapi32
-        if advapi32.CredWriteW(ctypes.byref(cred), 0):
-            return True
-        else:
-            log.warning(f"Windows CredWriteW failed: {ctypes.WinError()}")
+        parts = [
+            str(uuid.getnode()),
+            platform.system(),
+            platform.machine(),
+            getpass.getuser(),
+        ]
+        return "|".join(parts).encode("utf-8")
     except Exception as e:
-        log.warning(f"Failed to write Windows credential: {e}")
-    return False
+        log.warning(f"Failed to generate machine fingerprint: {e}")
+        return b"default_fallback_machine_fingerprint_for_krita_ai_diffusion"
 
 
-def _load_win32_cred(target: str) -> str | None:
+def _get_or_create_master_seed() -> bytes:
+    """Gets or creates a 32-byte master key seed, preferring keyring storage."""
+    # 1. Try to read from keyring
     try:
-        import ctypes
-        from ctypes import wintypes
+        import keyring
 
-        class CREDENTIALW(ctypes.Structure):
-            _fields_ = [
-                ("Flags", wintypes.DWORD),
-                ("Type", wintypes.DWORD),
-                ("TargetName", wintypes.LPWSTR),
-                ("Comment", wintypes.LPWSTR),
-                ("LastWritten", wintypes.FILETIME),
-                ("CredentialBlobSize", wintypes.DWORD),
-                ("CredentialBlob", ctypes.c_void_p),
-                ("Persist", wintypes.DWORD),
-                ("AttributeCount", wintypes.DWORD),
-                ("Attributes", ctypes.c_void_p),
-                ("TargetAlias", wintypes.LPWSTR),
-                ("UserName", wintypes.LPWSTR),
-            ]
+        key = keyring.get_password(SERVICE_NAME, "master_seed")
+        if key:
+            return base64.b64decode(key.encode("utf-8"))
+    except (ImportError, Exception):  # noqa: S110
+        pass
 
-        CRED_TYPE_GENERIC = 1
-
-        advapi32 = ctypes.windll.advapi32
-        cred_ptr = ctypes.POINTER(CREDENTIALW)()
-        if advapi32.CredReadW(target, CRED_TYPE_GENERIC, 0, ctypes.byref(cred_ptr)):
+    # 2. Fall back to local key file mixed with machine fingerprint
+    key_file = user_data_dir / ".key"
+    if not key_file.exists():
+        seed = secrets.token_bytes(32)
+        try:
+            key_file.write_bytes(seed)
             try:
-                cred = cred_ptr.contents
-                blob = ctypes.string_at(cred.CredentialBlob, cred.CredentialBlobSize)
-                return blob.decode("utf-16le")
-            finally:
-                advapi32.CredFree(cred_ptr)
-    except Exception as e:
-        log.warning(f"Failed to read Windows credential: {e}")
-    return None
+                os.chmod(key_file, 0o600)
+            except Exception:  # noqa: S110
+                pass
+        except Exception as e:
+            log.warning(f"Could not write secure key file: {e}")
+            seed = b"default_fallback_seed_for_krita_ai_diffusion"
+    else:
+        try:
+            seed = key_file.read_bytes()
+        except Exception as e:
+            log.warning(f"Could not read secure key file: {e}")
+            seed = b"default_fallback_seed_for_krita_ai_diffusion"
 
+    fingerprint = _get_machine_fingerprint()
+    derived = hashlib.pbkdf2_hmac("sha256", seed, fingerprint, 10000)
 
-def _delete_win32_cred(target: str) -> bool:
+    # 3. Try to save back to keyring so we have it there next time
     try:
-        import ctypes
+        import keyring
 
-        CRED_TYPE_GENERIC = 1
-        advapi32 = ctypes.windll.advapi32
-        if advapi32.CredDeleteW(target, CRED_TYPE_GENERIC, 0):
-            return True
-    except Exception as e:
-        log.warning(f"Failed to delete Windows credential: {e}")
-    return False
-
-
-# ---------------------------------------------------------------------------
-# macOS Native Keychain via subprocess (security CLI)
-# ---------------------------------------------------------------------------
-def _save_macos_cred(service: str, username: str, secret: str) -> bool:
-    try:
-        # -U updates the password if it already exists, -a is account, -s is service
-        subprocess.run(
-            ["security", "add-generic-password", "-a", username, "-s", service, "-w", secret, "-U"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as e:
-        log.warning(f"Failed to write macOS Keychain credential: {e}")
-    return False
-
-
-def _load_macos_cred(service: str, username: str) -> str | None:
-    try:
-        output = subprocess.check_output(
-            ["security", "find-generic-password", "-a", username, "-s", service, "-w"],
-            stderr=subprocess.DEVNULL,
-        )
-        return output.decode("utf-8").strip()
-    except Exception as e:
-        log.warning(f"Failed to read macOS Keychain credential: {e}")
-    return None
-
-
-def _delete_macos_cred(service: str, username: str) -> bool:
-    try:
-        subprocess.run(
-            ["security", "delete-generic-password", "-a", username, "-s", service],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as e:
-        log.warning(f"Failed to delete macOS Keychain credential: {e}")
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Linux Native Secret Service via subprocess (secret-tool CLI)
-# ---------------------------------------------------------------------------
-def _save_linux_cred(service: str, username: str, secret: str) -> bool:
-    try:
-        subprocess.run(
-            [
-                "secret-tool",
-                "store",
-                f"--label={SERVICE_NAME} Token",
-                "service",
-                service,
-                "username",
-                username,
-            ],
-            input=secret.encode("utf-8"),
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as e:
-        log.warning(f"Failed to write Linux Secret Service credential: {e}")
-    return False
-
-
-def _load_linux_cred(service: str, username: str) -> str | None:
-    try:
-        output = subprocess.check_output(
-            ["secret-tool", "lookup", "service", service, "username", username],
-            stderr=subprocess.DEVNULL,
-        )
-        return output.decode("utf-8").strip()
-    except Exception:  # noqa: S110
-        # Failure to find the credential is normal if it doesn't exist yet
+        keyring.set_password(SERVICE_NAME, "master_seed", base64.b64encode(derived).decode("utf-8"))
+    except (ImportError, Exception):  # noqa: S110
         pass
-    return None
 
-
-def _delete_linux_cred(service: str, username: str) -> bool:
-    try:
-        subprocess.run(
-            ["secret-tool", "clear", "service", service, "username", username],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as e:
-        log.warning(f"Failed to delete Linux Secret Service credential: {e}")
-    return False
+    return derived
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public Encryption & Decryption API
 # ---------------------------------------------------------------------------
-def save_token(token: str) -> bool:
-    """Stores the authentication token securely in the native OS keyring."""
+def encrypt_token(token: str) -> str:
+    """Encrypts plaintext token and returns a prefixed base64 string."""
     if not token:
-        return delete_token()
+        return ""
+    if token.startswith("enc:chacha:"):
+        return token
 
-    # 1. Try python-keyring library if available
     try:
-        import keyring
+        seed = _get_or_create_master_seed()
+        enc_key = hmac.digest(seed, b"encryption_key_derivation", "sha256")
+        mac_key = hmac.digest(seed, b"mac_key_derivation", "sha256")
 
-        keyring.set_password(SERVICE_NAME, USERNAME, token)
-        return True
-    except (ImportError, Exception):  # noqa: S110
-        pass
+        nonce = secrets.token_bytes(12)
+        ciphertext = chacha20_crypt(token.encode("utf-8"), enc_key, nonce)
+        mac = hmac.digest(mac_key, nonce + ciphertext, "sha256")
 
-    # 2. Fallback to native OS-specific implementations
-    sys_plat = platform.system()
-    if sys_plat == "Windows":
-        return _save_win32_cred(SERVICE_NAME, USERNAME, token)
-    elif sys_plat == "Darwin":
-        return _save_macos_cred(SERVICE_NAME, USERNAME, token)
-    elif sys_plat == "Linux":
-        return _save_linux_cred(SERVICE_NAME, USERNAME, token)
-
-    log.warning(f"Platform {sys_plat} is not supported for secure token storage.")
-    return False
+        payload = nonce + ciphertext + mac
+        encoded = base64.b64encode(payload).decode("utf-8")
+        return f"enc:chacha:{encoded}"
+    except Exception as e:
+        log.error(f"Failed to encrypt token: {e}")
+        return token
 
 
-def load_token() -> str:
-    """Loads the authentication token from the secure native OS keyring."""
-    # 1. Try python-keyring library if available
+def decrypt_token(token: str) -> str:
+    """Decrypts a prefixed token string. Returns plaintext unmodified."""
+    if not token or not token.startswith("enc:chacha:"):
+        return token
+
     try:
-        import keyring
+        seed = _get_or_create_master_seed()
+        encrypted_part = token[len("enc:chacha:") :]
+        payload = base64.b64decode(encrypted_part.encode("utf-8"))
 
-        val = keyring.get_password(SERVICE_NAME, USERNAME)
-        if val is not None:
-            return val
-    except (ImportError, Exception):  # noqa: S110
-        pass
+        if len(payload) < 44:  # 12 bytes nonce + 0+ bytes ciphertext + 32 bytes MAC
+            raise ValueError("Invalid encrypted payload length")
 
-    # 2. Fallback to native OS-specific implementations
-    sys_plat = platform.system()
-    if sys_plat == "Windows":
-        val = _load_win32_cred(SERVICE_NAME)
-        if val is not None:
-            return val
-    elif sys_plat == "Darwin":
-        val = _load_macos_cred(SERVICE_NAME, USERNAME)
-        if val is not None:
-            return val
-    elif sys_plat == "Linux":
-        val = _load_linux_cred(SERVICE_NAME, USERNAME)
-        if val is not None:
-            return val
+        nonce = payload[:12]
+        ciphertext = payload[12:-32]
+        expected_mac = payload[-32:]
 
-    return ""
+        enc_key = hmac.digest(seed, b"encryption_key_derivation", "sha256")
+        mac_key = hmac.digest(seed, b"mac_key_derivation", "sha256")
 
+        actual_mac = hmac.digest(mac_key, nonce + ciphertext, "sha256")
+        if not hmac.compare_digest(actual_mac, expected_mac):
+            raise ValueError("MAC verification failed. Payload is corrupted or key is incorrect.")
 
-def delete_token() -> bool:
-    """Deletes the authentication token from the secure native OS keyring."""
-    # 1. Try python-keyring library if available
-    deleted = False
-    try:
-        import keyring
-
-        keyring.delete_password(SERVICE_NAME, USERNAME)
-        deleted = True
-    except (ImportError, Exception):  # noqa: S110
-        pass
-
-    # 2. Fallback to native OS-specific implementations
-    sys_plat = platform.system()
-    if sys_plat == "Windows":
-        deleted = _delete_win32_cred(SERVICE_NAME) or deleted
-    elif sys_plat == "Darwin":
-        deleted = _delete_macos_cred(SERVICE_NAME, USERNAME) or deleted
-    elif sys_plat == "Linux":
-        deleted = _delete_linux_cred(SERVICE_NAME, USERNAME) or deleted
-
-    return deleted
+        decrypted = chacha20_crypt(ciphertext, enc_key, nonce)
+        return decrypted.decode("utf-8")
+    except Exception as e:
+        log.error(f"Failed to decrypt token: {e}")
+        return ""

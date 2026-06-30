@@ -211,9 +211,11 @@ class Settings(QObject):
 
     server_authorization: str
     _server_authorization = Setting(
-        _("Authorization Token"),
+        _("Authorization Token (Optional)"),
         "",
-        _("Token for authenticating with ComfyUI server"),
+        _(
+            "Token for authenticating with ComfyUI server. NOTE: Auth is NOT required unless your ComfyUI server specifically requires it."
+        ),
     )
 
     check_server_resources: bool
@@ -538,19 +540,19 @@ class Settings(QObject):
             self.server_mode = ServerMode.managed
 
     def save(self, path: Path | None = None):
-        path = self.default_path or path
+        path = path or self.default_path
         values = self._values.copy()
         if "server_authorization" in values:
             token = values["server_authorization"]
-            from .secure_storage import save_token
+            if token:
+                from .secure_storage import encrypt_token
 
-            save_token(token)
-            values["server_authorization"] = ""
+                values["server_authorization"] = encrypt_token(token)
         with open(path, "w") as file:
             file.write(json.dumps(values, default=encode_json, indent=4))
 
     def load(self, path: Path | None = None):
-        path = self.default_path or path
+        path = path or self.default_path
         self._migrate_legacy_settings(path)
         if not path.exists():
             self.save()  # create new file with defaults
@@ -570,16 +572,23 @@ class Settings(QObject):
                         log.error(f"{path}: {v} is not a valid value for '{k}'")
                         self._values[k] = setting.default
 
-            from .secure_storage import load_token
+            from .secure_storage import decrypt_token
 
-            if self._values.get("server_authorization") == "":
-                self._values["server_authorization"] = load_token()
-            else:
-                token = self._values.get("server_authorization", "")
-                if token:
-                    from .secure_storage import save_token
+            token = self._values.get("server_authorization", "")
+            if token == "":
+                # Try to migrate from legacy keyring storage if available
+                try:
+                    import keyring
 
-                    save_token(token)
+                    legacy_token = keyring.get_password("KritaAIDiffusion", "comfyui_auth")
+                    if legacy_token:
+                        self._values["server_authorization"] = legacy_token
+                        # Try to clean it up from legacy keyring so we don't migrate repeatedly
+                        keyring.delete_password("KritaAIDiffusion", "comfyui_auth")
+                except Exception:  # noqa: S110
+                    pass
+            elif token:
+                self._values["server_authorization"] = decrypt_token(token)
         except Exception as e:
             log.error(f"Failed to load settings: {e}")
 

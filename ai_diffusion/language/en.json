@@ -1,5 +1,9 @@
 {
   "id": "en",
   "name": "English",
-  "translations": {}
+  "translations": {
+    "Authorization Token (Optional)": "Authorization Token (Optional)",
+    "Token for authenticating with ComfyUI server. NOTE: Auth is NOT required unless your ComfyUI server specifically requires it.": "Token for authenticating with ComfyUI server. NOTE: Auth is NOT required unless your ComfyUI server specifically requires it.",
+    "Authorization is optional and only required if your ComfyUI server/connection demands it.": "Authorization is optional and only required if your ComfyUI server/connection demands it."
+  }
 }

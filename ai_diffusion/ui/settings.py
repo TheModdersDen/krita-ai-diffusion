@@ -522,6 +522,16 @@ class ConnectionSettings(SettingsTab):
         self._server_authorization.textChanged.connect(self.write)
         connection_layout.addWidget(self._server_authorization)
 
+        self._server_authorization_info = QLabel(
+            _(
+                "Authorization is optional and only required if your ComfyUI server/connection demands it."
+            ),
+            self._connection_widget,
+        )
+        self._server_authorization_info.setWordWrap(True)
+        self._server_authorization_info.setStyleSheet(f"color: {grey}; font-style: italic;")
+        connection_layout.addWidget(self._server_authorization_info)
+
         self._connection_status = QLabel(self._connection_widget)
         self._supported_workloads = QLabel(self._connection_widget)
         self._supported_workloads.setWordWrap(True)

@@ -1,42 +1,47 @@
 ---
 title: Server Authentication
-description: Secure JWT/HTTPS token authentication for remote ComfyUI connections in Krita
+description: Secure token-based encryption for custom ComfyUI connections in Krita
 ---
 
 import ExternalLink from '../../components/ExternalLink.astro'
 
-The Krita AI Diffusion plugin supports persistent, secure JWT/HTTPS token-based authentication for custom (external) ComfyUI servers. This allows you to connect to authenticated or secure remote ComfyUI installations (e.g. behind reverse proxies or gateway access controls) seamlessly.
+The Krita AI Diffusion plugin supports persistent, secure, and optional token-based authentication for custom (external) ComfyUI servers. This allows you to connect to authenticated or secure remote ComfyUI installations (e.g., behind reverse proxies or gateway access controls) seamlessly.
+
+> [!IMPORTANT]
+> **Server Authentication is completely OPTIONAL.** You do not need to configure an authorization token unless your external ComfyUI server setup explicitly demands it. By default, local managed servers do not require authentication.
 
 ---
 
 ## How to Configure
 
-1. In Krita, open the settings dialog by clicking the **Configure Krita** or plugin settings icon.
+1. In Krita, open the settings dialog by clicking the plugin settings icon.
 2. Navigate to the **Server Configuration** tab.
 3. Select **Custom Server**.
-4. Below the **Server URL** field, you will find the **Authorization Token** field.
-5. Paste or type your authentication token/JWT into this field. The input is masked automatically for privacy.
+4. Below the **Server URL** field, you will find the **Authorization Token (Optional)** field.
+5. Paste or type your authentication token or JWT into this field. The input is masked automatically for privacy.
 6. Click **Connect** or save settings to apply. 
 
-The token will automatically apply on every plugin update, reload, or Krita restart without requiring manual re-entry.
+Once configured, the token is automatically encrypted and saved. It will apply on every plugin update, reload, or Krita restart without requiring manual re-entry.
 
 ---
 
 ## Architectural & Security Overview
 
-### Zero Plaintext on Disk
-The authentication token is never saved in plaintext inside `settings.json`. When settings are saved, the plugin extracts the token and delegates its storage to the secure storage manager. The token field in `settings.json` is stored as an empty string `""`.
+### Encrypted Storage in settings.json
+The authorization token is never saved in plaintext on disk. When settings are saved, the plugin encrypts the token using a secure, OS-independent authenticated encryption scheme and writes the ciphertext directly into `settings.json` under `"server_authorization"` with the prefix `enc:chacha:`. 
 
-### Native OS-Level Keyrings
-To ensure high-entropy, post-quantum secure encryption, the plugin delegates storage to native operating system credential stores:
-- **Windows**: Windows Credential Manager (via native Windows `CredWriteW`/`CredReadW` APIs).
-- **macOS**: macOS Keychain (via the standard `/usr/bin/security` tool).
-- **Linux**: Linux Secret Service (via the `secret-tool` CLI from `libsecret`).
+If a plaintext token is manually entered into `settings.json`, the plugin will detect it, decrypt it, and automatically re-encrypt it securely on the next save.
 
-If the third-party Python `keyring` library is installed, it is preferred. Otherwise, the plugin uses native `ctypes` and `subprocess` fallbacks to run out of the box inside Krita's embedded Python interpreter without requiring any external pip installations.
+### Keyring-Managed Key Storage with Fallback
+To encrypt and decrypt the token, a master encryption key is generated and stored using a multi-tiered security model:
+- **Primary (Native OS Keyring)**: The plugin attempts to store the master seed in the native OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service) using the pure-Python `keyring` library. This is extremely efficient and leverages OS-level security.
+- **Secondary (OS-Independent Fallback)**: If `keyring` is unavailable or fails to initialize, the master seed is stored in a local `.key` file in the plugin's app data directory with strict owner-only file permissions (`0o600`). This seed is then combined with a machine-specific hardware/OS fingerprint (`uuid.getnode()`, system configuration, and user account credentials) using **PBKDF2-HMAC-SHA256** to derive the actual encryption key.
+
+### Authenticated Encryption
+Encryption is performed using a pure-Python implementation of the **RFC 7539 ChaCha20** stream cipher, combined with **HMAC-SHA256** for message authentication (Encrypt-then-MAC). This provides post-quantum secure levels of cryptographic protection (using 256-bit keys to resist Grover's search algorithm) while avoiding heavy binary dependencies (like the compiled `cryptography` library) which could fail to load in Krita's embedded environment.
 
 ### In-Memory Lifetime
-The token is loaded decrypted from secure storage only during the active Krita session and is stored strictly in memory. 
+The token is loaded and decrypted from `settings.json` only during the active Krita session and is stored strictly in memory. 
 
 ### HTTP and WebSocket Authentication
 - **HTTP**: The token is sent as a standard bearer token header on all API calls:

@@ -351,16 +351,16 @@ class Deserializer:
     def _value(self, cls, value):
         if is_dataclass(cls):
             return self._object(cls, value)
-        elif issubclass(cls, Enum):
-            return cls[value]
-        elif issubclass(cls, Image):
-            return self._images[value]
-        elif issubclass(cls, tuple):
-            return cls(*value)
         elif isinstance(cls, GenericAlias) and issubclass(get_origin(cls), tuple):
             return tuple(value)
         elif isinstance(cls, GenericAlias) and issubclass(get_origin(cls), list):
             return [self._value(get_args(cls)[0], v) for v in value]
+        elif isinstance(cls, type) and issubclass(cls, Enum):
+            return cls[value]
+        elif isinstance(cls, type) and issubclass(cls, Image):
+            return self._images[value]
+        elif isinstance(cls, type) and issubclass(cls, tuple):
+            return cls(*value)
         else:
             return value
 
